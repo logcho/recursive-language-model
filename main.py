@@ -125,8 +125,25 @@ def main():
         print(f"Error: Context file '{args.context_file}' does not exist.")
         return
         
-    with open(args.context_file, "r", encoding="utf-8") as f:
-        context_content = f.read()
+    if args.context_file.lower().endswith(".pdf"):
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(args.context_file)
+            pages_text = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    pages_text.append(text)
+            context_content = "\n".join(pages_text)
+        except ImportError:
+            print("Error: pypdf is required to parse PDF files. Run 'pip install pypdf'.")
+            return
+        except Exception as e:
+            print(f"Error reading PDF file: {e}")
+            return
+    else:
+        with open(args.context_file, "r", encoding="utf-8") as f:
+            context_content = f.read()
         
     print(f"=== RUNNING RLM RUNNER ===")
     print(f"Provider:   {args.provider}")

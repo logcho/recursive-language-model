@@ -76,6 +76,15 @@ def orchestrator_node(state: RLMState, config: RunnableConfig) -> Dict[str, Any]
     # Parse final answer immediately if it's there
     final_ans = parse_final_answer(response.content)
     
+    if hasattr(sandbox, "callback") and sandbox.callback:
+        sandbox.callback({
+            "type": "orchestrator",
+            "depth": getattr(sandbox, "current_depth", 0),
+            "content": response.content,
+            "final_answer": final_ans,
+            "variables_summary": variables_summary
+        })
+    
     return {
         "messages": updated_messages,
         "final_answer": final_ans,
@@ -91,13 +100,13 @@ def executor_node(state: RLMState) -> Dict[str, Any]:
     last_msg = state["messages"][-1].content
     code = parse_code_block(last_msg)
     
+    sandbox = state["sandbox"]
     turn_num = state["step_count"] + 1
     new_logs = f"--- Turn {turn_num} Execution ---\n"
     
     if code:
         new_logs += f"Executing Code:\n```python\n{code}\n```\n\n"
         # Run code in sandbox
-        sandbox = state["sandbox"]
         res = sandbox.run_code(code)
         
         # Log outputs
@@ -112,9 +121,31 @@ def executor_node(state: RLMState) -> Dict[str, Any]:
             new_logs += f"Execution Status: Failed with exception:\n{res['exception']}\n"
             if res["traceback"]:
                 new_logs += f"Traceback:\n{res['traceback']}\n"
+                
+        if hasattr(sandbox, "callback") and sandbox.callback:
+            sandbox.callback({
+                "type": "executor",
+                "depth": getattr(sandbox, "current_depth", 0),
+                "code": code,
+                "stdout": res["stdout"],
+                "stderr": res["stderr"],
+                "success": res["success"],
+                "exception": res["exception"]
+            })
     else:
         new_logs += "Execution Status: Failed. No valid ```python ``` code block found in your previous response.\n"
         new_logs += "Please write Python code inside markdown tags or output FINAL: <your final answer>.\n"
+        
+        if hasattr(sandbox, "callback") and sandbox.callback:
+            sandbox.callback({
+                "type": "executor",
+                "depth": getattr(sandbox, "current_depth", 0),
+                "code": None,
+                "stdout": "",
+                "stderr": "",
+                "success": False,
+                "exception": "No valid ```python ``` code block found in previous response."
+            })
         
     # Append to running history log
     updated_history = state["history_logs"]

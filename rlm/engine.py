@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Callable
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -18,7 +18,8 @@ class RLMEngine:
         current_depth: int = 0,
         max_depth: int = 3,
         max_steps: int = 10,
-        verbose: bool = True
+        verbose: bool = True,
+        callback: Optional[Callable[[Dict[str, Any]], None]] = None
     ):
         self.model = model
         self.leaf_model = leaf_model or model
@@ -26,6 +27,7 @@ class RLMEngine:
         self.max_depth = max_depth
         self.max_steps = max_steps
         self.verbose = verbose
+        self.callback = callback
         
         # Compile graph workflow once
         self.graph = build_rlm_graph().compile()
@@ -47,6 +49,14 @@ class RLMEngine:
         self._log(f"Sub-Query: {query}")
         self._log(f"Text Slice Length: {len(text_slice)} chars")
         
+        if self.callback:
+            self.callback({
+                "type": "leaf_start",
+                "depth": self.current_depth,
+                "query": query,
+                "text_slice_len": len(text_slice)
+            })
+        
         messages = [
             SystemMessage(content=(
                 "You are a fast, targeted helper leaf node in a Recursive Language Model pipeline. "
@@ -58,6 +68,15 @@ class RLMEngine:
         
         response = self.leaf_model.invoke(messages)
         self._log(f"Leaf Node Response Summary: {response.content[:100]}...")
+        
+        if self.callback:
+            self.callback({
+                "type": "leaf_end",
+                "depth": self.current_depth,
+                "query": query,
+                "response": response.content
+            })
+            
         return response.content
 
     def _rlm_query_fn(self, query: str, text_slice: str) -> str:
@@ -66,9 +85,25 @@ class RLMEngine:
         self._log(f"Sub-Query: {query}")
         self._log(f"Text Slice Length: {len(text_slice)} chars")
         
+        if self.callback:
+            self.callback({
+                "type": "branch_start",
+                "depth": self.current_depth,
+                "query": query,
+                "text_slice_len": len(text_slice)
+            })
+        
         if self.current_depth >= self.max_depth:
             self._log("Max depth limit reached! Falling back to flat leaf node (llm_query) instead of recursing.")
-            return self._llm_query_fn(query, text_slice)
+            res = self._llm_query_fn(query, text_slice)
+            if self.callback:
+                self.callback({
+                    "type": "branch_end",
+                    "depth": self.current_depth,
+                    "query": query,
+                    "response": res
+                })
+            return res
             
         # Spawn child engine with depth incremented
         child_engine = RLMEngine(
@@ -77,12 +112,22 @@ class RLMEngine:
             current_depth=self.current_depth + 1,
             max_depth=self.max_depth,
             max_steps=self.max_steps,
-            verbose=self.verbose
+            verbose=self.verbose,
+            callback=self.callback
         )
         
         # Run child engine
         child_answer = child_engine.run(query, text_slice)
         self._log(f"Branch Node Recursive Answer Summary: {child_answer[:100]}...")
+        
+        if self.callback:
+            self.callback({
+                "type": "branch_end",
+                "depth": self.current_depth,
+                "query": query,
+                "response": child_answer
+            })
+            
         return child_answer
 
     def run(self, query: str, context: str) -> str:
@@ -95,6 +140,16 @@ class RLMEngine:
             llm_query_fn=self._llm_query_fn,
             rlm_query_fn=self._rlm_query_fn
         )
+        sandbox.callback = self.callback
+        sandbox.current_depth = self.current_depth
+        
+        if self.callback:
+            self.callback({
+                "type": "engine_start",
+                "depth": self.current_depth,
+                "query": query,
+                "context_len": len(context)
+            })
         
         # Build initial state
         initial_state = {
@@ -120,8 +175,23 @@ class RLMEngine:
         # Handle termination results
         if final_state["final_answer"] is not None:
             self._log(f"Orchestration completed successfully.")
+            if self.callback:
+                self.callback({
+                    "type": "engine_end",
+                    "depth": self.current_depth,
+                    "final_answer": final_state["final_answer"],
+                    "success": True
+                })
             return final_state["final_answer"]
         else:
             self._log(f"Orchestration exited without resolving (Step limit {self.max_steps} hit or error).")
+            if self.callback:
+                self.callback({
+                    "type": "engine_end",
+                    "depth": self.current_depth,
+                    "final_answer": None,
+                    "success": False,
+                    "error": "Step limit exceeded"
+                })
             # Fallback output
             return "Error: Could not resolve query. Step limit exceeded."
