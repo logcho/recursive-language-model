@@ -69,12 +69,27 @@ class RLMEngine:
         response = self.leaf_model.invoke(messages)
         self._log(f"Leaf Node Response Summary: {response.content[:100]}...")
         
+        # Extract token usage details
+        from rlm.graph import extract_token_usage
+        tokens = extract_token_usage(response)
+        if tokens["total"] == 0:
+            input_text = messages[0].content + messages[1].content
+            output_text = response.content
+            p = len(input_text) // 4
+            c = len(output_text) // 4
+            tokens = {
+                "prompt": p,
+                "completion": c,
+                "total": p + c
+            }
+        
         if self.callback:
             self.callback({
                 "type": "leaf_end",
                 "depth": self.current_depth,
                 "query": query,
-                "response": response.content
+                "response": response.content,
+                "tokens": tokens
             })
             
         return response.content
@@ -142,6 +157,7 @@ class RLMEngine:
         )
         sandbox.callback = self.callback
         sandbox.current_depth = self.current_depth
+        sandbox.max_depth = self.max_depth
         
         if self.callback:
             self.callback({

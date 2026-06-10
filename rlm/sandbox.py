@@ -24,6 +24,8 @@ class Sandbox:
             "context": context,
             "llm_query": self._llm_query_wrapper,
             "rlm_query": self._rlm_query_wrapper,
+            "get_logical_chunks": self.get_logical_chunks,
+            "search_context": self.search_context,
         }
         
         # Pre-import safe libraries for convenience
@@ -38,12 +40,28 @@ class Sandbox:
         """Wrapper to direct script-level calls to the engine-level leaf callback."""
         if not isinstance(query, str) or not isinstance(text_slice, str):
             raise TypeError("llm_query requires arguments (query: str, text_slice: str)")
+            
+        # Check for swapped arguments (query and text_slice)
+        if (query in self.context and text_slice not in self.context) or \
+           (query in self.context and text_slice in self.context and len(query) > len(text_slice) * 5):
+            query, text_slice = text_slice, query
+            sys.stderr.write("WARNING: Detected swapped arguments in llm_query function call (query was document text, text_slice was query string). Automatically corrected order.\n")
+            sys.stderr.flush()
+            
         return self.llm_query_fn(query, text_slice)
 
     def _rlm_query_wrapper(self, query: str, text_slice: str) -> str:
         """Wrapper to direct script-level calls to the engine-level branch callback."""
         if not isinstance(query, str) or not isinstance(text_slice, str):
             raise TypeError("rlm_query requires arguments (query: str, text_slice: str)")
+            
+        # Check for swapped arguments (query and text_slice)
+        if (query in self.context and text_slice not in self.context) or \
+           (query in self.context and text_slice in self.context and len(query) > len(text_slice) * 5):
+            query, text_slice = text_slice, query
+            sys.stderr.write("WARNING: Detected swapped arguments in rlm_query function call (query was document text, text_slice was query string). Automatically corrected order.\n")
+            sys.stderr.flush()
+            
         return self.rlm_query_fn(query, text_slice)
 
     def run_code(self, code: str) -> Dict[str, Any]:
@@ -107,6 +125,8 @@ class Sandbox:
             "context",
             "llm_query",
             "rlm_query",
+            "get_logical_chunks",
+            "search_context",
             "re",
             "json",
             "math"
@@ -129,3 +149,69 @@ class Sandbox:
         if not summary_lines:
             return "No custom variables defined."
         return "\n".join(summary_lines)
+
+    def get_logical_chunks(self) -> list:
+        """
+        Splits context into logical chunks.
+        Target chunk size: ~8000 characters, trying to split on paragraph boundaries (\n\n) or newlines (\n).
+        """
+        chunks = []
+        text = self.context
+        target_size = 8000
+        
+        start = 0
+        total_len = len(text)
+        chunk_id = 0
+        
+        if total_len == 0:
+            return []
+            
+        while start < total_len:
+            end = min(start + target_size, total_len)
+            if end < total_len:
+                # Find the last paragraph/newline break to split cleanly
+                last_double_newline = text.rfind("\n\n", start, end)
+                if last_double_newline > start + (target_size // 2):
+                    end = last_double_newline + 2
+                else:
+                    last_newline = text.rfind("\n", start, end)
+                    if last_newline > start + (target_size // 2):
+                        end = last_newline + 1
+                    else:
+                        last_space = text.rfind(" ", start, end)
+                        if last_space > start + (target_size // 2):
+                            end = last_space + 1
+            
+            chunk_text = text[start:end]
+            preview = chunk_text[:100].replace("\n", " ").strip() + ("..." if len(chunk_text) > 100 else "")
+            chunks.append({
+                "chunk_id": chunk_id,
+                "start": start,
+                "end": end,
+                "preview": preview
+            })
+            start = end
+            chunk_id += 1
+            
+        return chunks
+
+    def search_context(self, pattern: str) -> list:
+        """
+        Returns character boundaries (start_index, end_index) where pattern or regex matches.
+        """
+        import re
+        matches = []
+        try:
+            # Try regex search first
+            for m in re.finditer(pattern, self.context, re.IGNORECASE):
+                matches.append((m.start(), m.end()))
+        except re.error:
+            # Fallback to literal search if pattern is not valid regex
+            start = 0
+            while True:
+                idx = self.context.lower().find(pattern.lower(), start)
+                if idx == -1:
+                    break
+                matches.append((idx, idx + len(pattern)))
+                start = idx + max(1, len(pattern))
+        return matches

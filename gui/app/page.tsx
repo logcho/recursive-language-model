@@ -21,6 +21,7 @@ interface RLMNode {
   exception?: string;
   textSliceLen?: number;
   response?: string;
+  tokens?: { prompt: number; completion: number; total: number };
   children: RLMNode[];
   timestamp: number;
 }
@@ -53,6 +54,7 @@ export default function Dashboard() {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [characterCount, setCharacterCount] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
+  const [totalTokens, setTotalTokens] = useState(0);
   
   // UI States
   const [collapsedMap, setCollapsedMap] = useState<{ [id: string]: boolean }>({});
@@ -88,6 +90,7 @@ export default function Dashboard() {
     setFinalAnswer(null);
     setElapsedTime(0);
     setTotalSteps(0);
+    setTotalTokens(0);
     setCollapsedMap({});
 
     // Start Timer
@@ -152,6 +155,10 @@ export default function Dashboard() {
                 setTotalSteps((prev) => prev + 1);
               }
               
+              if (event.tokens && typeof event.tokens.total === "number") {
+                setTotalTokens((prev) => prev + event.tokens.total);
+              }
+              
               setEvents((prev) => [...prev, event]);
 
               // Handle termination events
@@ -202,6 +209,7 @@ export default function Dashboard() {
     setStatus("idle");
     setElapsedTime(0);
     setTotalSteps(0);
+    setTotalTokens(0);
   };
 
   // Toggle Collapse Map
@@ -278,6 +286,7 @@ export default function Dashboard() {
               content: e.content,
               finalAnswer: e.final_answer || undefined,
               variablesSummary: e.variables_summary,
+              tokens: e.tokens,
               children: [],
               timestamp: Date.now(),
             });
@@ -312,6 +321,7 @@ export default function Dashboard() {
               .find((c) => c.type === "leaf_call" && c.query === e.query);
             if (lastLeaf) {
               lastLeaf.response = e.response;
+              lastLeaf.tokens = e.tokens;
             }
           } else if (e.type === "branch_start") {
             const branchCard: RLMNode = {
@@ -376,6 +386,10 @@ export default function Dashboard() {
       cardClass += ` ${styles.typeBranch}`;
       nodeIconSymbol = "🌿";
       badgeText = "Branch RLM";
+    }
+
+    if (node.tokens && node.tokens.total > 0) {
+      badgeText += ` (${node.tokens.total} tkn)`;
     }
 
     return (
@@ -850,6 +864,10 @@ export default function Dashboard() {
             <div className={styles.statItem} style={{ marginTop: "8px" }}>
               <span className={styles.statLabel}>Total Steps</span>
               <span className={styles.statVal}>{totalSteps}</span>
+            </div>
+            <div className={styles.statItem} style={{ marginTop: "8px" }}>
+              <span className={styles.statLabel}>Total Tokens</span>
+              <span className={styles.statVal}>{totalTokens.toLocaleString()}</span>
             </div>
             <div className={styles.statItem} style={{ marginTop: "8px" }}>
               <span className={styles.statLabel}>Active Depth</span>

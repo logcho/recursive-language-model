@@ -90,5 +90,58 @@ print(f"Tree: {tree_data}")
         self.assertIn("Summary: llm_result_for_Summarize first sentence", res["stdout"])
         self.assertIn("Tree: rlm_result_for_Compile a structure", res["stdout"])
 
+    def test_navigation_tools(self):
+        """Verify get_logical_chunks and search_context functions inside sandbox execution."""
+        context = "Chapter 1. This is the first section.\n\nChapter 2. This is the second section."
+        sandbox = Sandbox(
+            context=context,
+            llm_query_fn=lambda q, s: "",
+            rlm_query_fn=lambda q, s: ""
+        )
+        
+        res_chunks = sandbox.run_code("chunks = get_logical_chunks()")
+        self.assertTrue(res_chunks["success"])
+        chunks = sandbox.local_vars.get("chunks")
+        self.assertIsNotNone(chunks)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0]["chunk_id"], 0)
+        self.assertEqual(chunks[0]["start"], 0)
+        self.assertEqual(chunks[0]["end"], len(context))
+        self.assertIn("Chapter 1", chunks[0]["preview"])
+        
+        res_search = sandbox.run_code("matches = search_context('Chapter')")
+        self.assertTrue(res_search["success"])
+        matches = sandbox.local_vars.get("matches")
+        self.assertIsNotNone(matches)
+        self.assertEqual(len(matches), 2)
+        self.assertEqual(matches[0], (0, 7))
+        self.assertEqual(matches[1], (context.find("Chapter 2"), context.find("Chapter 2") + 7))
+
+    def test_swapped_arguments(self):
+        """Verify that llm_query and rlm_query detect and auto-correct swapped parameters."""
+        context = "SIRA stands for something important."
+        llm_args = []
+        rlm_args = []
+        
+        sandbox = Sandbox(
+            context=context,
+            llm_query_fn=lambda q, s: (llm_args.append((q, s)) or "llm_ok"),
+            rlm_query_fn=lambda q, s: (rlm_args.append((q, s)) or "rlm_ok")
+        )
+        
+        res_llm = sandbox.run_code("res = llm_query(context, 'What does SIRA stand for?')")
+        self.assertTrue(res_llm["success"])
+        self.assertEqual(sandbox.local_vars.get("res"), "llm_ok")
+        self.assertEqual(len(llm_args), 1)
+        self.assertEqual(llm_args[0], ("What does SIRA stand for?", context))
+        self.assertIn("WARNING: Detected swapped arguments in llm_query", res_llm["stderr"])
+        
+        res_rlm = sandbox.run_code("res2 = rlm_query(context, 'Describe SIRA')")
+        self.assertTrue(res_rlm["success"])
+        self.assertEqual(sandbox.local_vars.get("res2"), "rlm_ok")
+        self.assertEqual(len(rlm_args), 1)
+        self.assertEqual(rlm_args[0], ("Describe SIRA", context))
+        self.assertIn("WARNING: Detected swapped arguments in rlm_query", res_rlm["stderr"])
+
 if __name__ == '__main__':
     unittest.main()

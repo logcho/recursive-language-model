@@ -7,6 +7,43 @@ from langgraph.graph import StateGraph, END
 from rlm.sandbox import Sandbox
 from rlm.prompts import SYSTEM_INSTRUCTION, USER_PROMPT
 
+def extract_token_usage(response) -> dict:
+    """Extracts token usage details from a LangChain response message."""
+    metadata = getattr(response, "response_metadata", {}) or {}
+    
+    # OpenAI format
+    if "token_usage" in metadata:
+        usage = metadata["token_usage"] or {}
+        return {
+            "prompt": usage.get("prompt_tokens", 0),
+            "completion": usage.get("completion_tokens", 0),
+            "total": usage.get("total_tokens", 0)
+        }
+    
+    # Anthropic format
+    if "usage" in metadata:
+        usage = metadata["usage"] or {}
+        p = usage.get("input_tokens", 0)
+        c = usage.get("output_tokens", 0)
+        return {
+            "prompt": p,
+            "completion": c,
+            "total": p + c
+        }
+    
+    # Google format
+    if "usage_metadata" in metadata:
+        usage = metadata["usage_metadata"] or {}
+        p = usage.get("prompt_token_count", 0)
+        c = usage.get("candidates_token_count", 0)
+        return {
+            "prompt": p,
+            "completion": c,
+            "total": p + c
+        }
+        
+    return {"prompt": 0, "completion": 0, "total": 0}
+
 class RLMState(TypedDict):
     query: str
     context_len: int
@@ -48,11 +85,20 @@ def orchestrator_node(state: RLMState, config: RunnableConfig) -> Dict[str, Any]
     sandbox = state["sandbox"]
     variables_summary = sandbox.get_variables_summary()
     
+    current_depth = getattr(sandbox, "current_depth", 0)
+    max_depth = getattr(sandbox, "max_depth", 3)
+    current_retry = state["step_count"] + 1
+    max_retries = state["max_steps"]
+    
     # Format system prompt with current sandbox state
     system_content = SYSTEM_INSTRUCTION.format(
         context_len=state["context_len"],
         query=state["query"],
-        variables_summary=variables_summary
+        variables_summary=variables_summary,
+        current_depth=current_depth,
+        max_depth=max_depth,
+        current_retry=current_retry,
+        max_retries=max_retries
     )
     
     # Format user prompt with the execution logs from the history
@@ -69,6 +115,19 @@ def orchestrator_node(state: RLMState, config: RunnableConfig) -> Dict[str, Any]
     # Invoke Root LLM
     response = model.invoke(prompt_messages)
     
+    # Extract token usage details
+    tokens = extract_token_usage(response)
+    if tokens["total"] == 0:
+        input_text = system_content + user_content
+        output_text = response.content
+        p = len(input_text) // 4
+        c = len(output_text) // 4
+        tokens = {
+            "prompt": p,
+            "completion": c,
+            "total": p + c
+        }
+    
     # Update messages tracking
     updated_messages = list(state["messages"])
     updated_messages.append(response)
@@ -82,7 +141,8 @@ def orchestrator_node(state: RLMState, config: RunnableConfig) -> Dict[str, Any]
             "depth": getattr(sandbox, "current_depth", 0),
             "content": response.content,
             "final_answer": final_ans,
-            "variables_summary": variables_summary
+            "variables_summary": variables_summary,
+            "tokens": tokens
         })
     
     return {
