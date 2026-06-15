@@ -194,6 +194,9 @@ def executor_node(state: RLMState) -> Dict[str, Any]:
     Parses python code from the orchestrator, runs it inside the persistent sandbox,
     and logs stdout, stderr, or traceback back into the state history.
     """
+    if state["final_answer"] is not None:
+        return state
+
     last_msg = state["messages"][-1].content
     code = parse_code_block(last_msg)
     
@@ -316,14 +319,15 @@ def build_rlm_graph() -> StateGraph:
     workflow.set_entry_point("orchestrator")
     
     # Set edges
+    workflow.add_edge("orchestrator", "executor")
+    
     workflow.add_conditional_edges(
-        "orchestrator",
+        "executor",
         should_continue,
         {
-            "continue": "executor",
+            "continue": "orchestrator",
             "end": END
         }
     )
-    workflow.add_edge("executor", "orchestrator")
     
     return workflow
