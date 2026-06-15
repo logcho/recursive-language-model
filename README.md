@@ -68,7 +68,7 @@ recursive-language-model/
 
 ## Setup & Installation
 
-Ensure you have Python 3.9+ installed on your system.
+Ensure you have Python 3.11+ installed on your system. This is required to support the modern type annotations (e.g. `|` unions) used by the sandbox environment packages.
 
 1. **Clone and Navigate to Project Directory:**
    ```bash
@@ -124,6 +124,26 @@ python3 main.py \
   --model gpt-4o-mini \
   --context-file path/to/your/document.txt \
   --query "Extract all financial tables and aggregate their net totals"
+```
+
+### 3. Selecting a Sandbox Environment
+RLM isolates execution in stateful sandboxes. By default, it runs in a standard local Python environment. You can specify other sandbox environments from the command line using the `--environment` flag (or select them in the Visualizer GUI):
+- `local`: In-process Python sandbox (default).
+- `ipython`: IPython interactive shell.
+- `docker`: Isolated Docker container execution (requires local Docker running).
+- `modal`: Executes code on remote Modal containers (requires `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` variables).
+- `prime`: Prime dev environment.
+- `daytona`: Daytona sandbox provider.
+- `e2b`: E2B secure sandboxes (requires `E2B_API_KEY` set in environment).
+
+Example using the Docker backend:
+```bash
+python3 main.py \
+  --provider openai \
+  --model gpt-4o-mini \
+  --environment docker \
+  --context-file tests/test_rlm.py \
+  --query "Analyze the imports in this file"
 ```
 
 ---

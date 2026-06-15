@@ -70,7 +70,7 @@ class MockChatModel(BaseChatModel):
         if response_list and turn_idx < len(response_list):
             content = response_list[turn_idx]
         else:
-            content = "FINAL('Simulation complete (no mock response configured).')"
+            content = "FINAL: Simulation complete (no mock response configured)."
 
         message = AIMessage(content=content)
         generation = ChatGeneration(message=message)

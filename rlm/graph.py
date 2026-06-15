@@ -147,6 +147,11 @@ def orchestrator_node(state: RLMState, config: RunnableConfig) -> Dict[str, Any]
     # Invoke Root LLM
     response = model.invoke(prompt_messages)
     
+    # Print orchestrator response to terminal stdout for debugging
+    import sys
+    sys.__stdout__.write(f"\n--- Turn {current_retry} Orchestrator Response ---\n{response.content}\n--------------------------------------------\n")
+    sys.__stdout__.flush()
+    
     # Extract token usage details
     tokens = extract_token_usage(response)
     if tokens["total"] == 0:
@@ -202,6 +207,18 @@ def executor_node(state: RLMState) -> Dict[str, Any]:
         new_logs += f"Executing Code:\n```python\n{code}\n```\n\n"
         # Run code in sandbox
         res = sandbox.run_code(code)
+        
+        # Print sandbox outputs to terminal stdout for debugging
+        import sys
+        sys.__stdout__.write(f"\n--- Turn {turn_num} Sandbox Execution ---\n")
+        if res["stdout"]:
+            sys.__stdout__.write(f"Stdout:\n{res['stdout']}\n")
+        if res["stderr"]:
+            sys.__stdout__.write(f"Stderr:\n{res['stderr']}\n")
+        if res["exception"]:
+            sys.__stdout__.write(f"Exception:\n{res['exception']}\n")
+        sys.__stdout__.write("-----------------------------------------\n")
+        sys.__stdout__.flush()
         
         # Log outputs
         if res["stdout"]:

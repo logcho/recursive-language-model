@@ -31,8 +31,9 @@ export default function Dashboard() {
   const [query, setQuery] = useState("Identify major projects and their budgets mentioned in the report.");
   const [provider, setProvider] = useState("mock");
   const [modelName, setModelName] = useState("gpt-4o-mini");
-  const [maxDepth, setMaxDepth] = useState(3);
-  const [maxSteps, setMaxSteps] = useState(10);
+  const [maxDepth, setMaxDepth] = useState(10);
+  const [maxSteps, setMaxSteps] = useState(100);
+  const [environment, setEnvironment] = useState("local");
   const [contextSource, setContextSource] = useState<"text" | "file">("text");
   const [contextText, setContextText] = useState(
     "Annual Operations Summary Report:\n\n" +
@@ -49,18 +50,18 @@ export default function Dashboard() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [events, setEvents] = useState<any[]>([]);
   const [finalAnswer, setFinalAnswer] = useState<string | null>(null);
-  
+
   // Metrics
   const [elapsedTime, setElapsedTime] = useState(0);
   const [characterCount, setCharacterCount] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   const [totalTokens, setTotalTokens] = useState(0);
-  
+
   // UI States
   const [collapsedMap, setCollapsedMap] = useState<{ [id: string]: boolean }>({});
   const [viewMode, setViewMode] = useState<"tree" | "graph">("tree");
   const [selectedNode, setSelectedNode] = useState<RLMNode | null>(null);
-  
+
   // Refs for tracking
   const abortControllerRef = useRef<AbortController | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -109,6 +110,7 @@ export default function Dashboard() {
     formData.append("model_name", modelName);
     formData.append("max_depth", maxDepth.toString());
     formData.append("max_steps", maxSteps.toString());
+    formData.append("environment", environment);
 
     if (contextSource === "file" && file) {
       formData.append("file", file);
@@ -149,16 +151,16 @@ export default function Dashboard() {
           if (line.startsWith("data: ")) {
             try {
               const event = JSON.parse(line.slice(6));
-              
+
               // Increment step counter on orchestrator decision
               if (event.type === "orchestrator") {
                 setTotalSteps((prev) => prev + 1);
               }
-              
+
               if (event.tokens && typeof event.tokens.total === "number") {
                 setTotalTokens((prev) => prev + event.tokens.total);
               }
-              
+
               setEvents((prev) => [...prev, event]);
 
               // Handle termination events
@@ -360,7 +362,7 @@ export default function Dashboard() {
   // Recursive Tree Node Renderer Component
   const TreeNode = ({ node }: { node: RLMNode }) => {
     const isCollapsed = collapsedMap[node.id] || false;
-    
+
     // Choose appropriate styling class based on node type
     let cardClass = styles.nodeCard;
     let nodeIconSymbol = "🌿";
@@ -580,10 +582,10 @@ export default function Dashboard() {
   // Horizontal Mind-Map Node Renderer Component
   const GraphNodeView = ({ node, onClick }: { node: RLMNode; onClick: (n: RLMNode) => void }) => {
     const hasChildren = node.children && node.children.length > 0;
-    
+
     let iconSymbol = "🌿";
     let badgeColor = "var(--accent-purple)";
-    
+
     if (node.type === "engine") {
       iconSymbol = "⚙️";
       badgeColor = "var(--accent-purple)";
@@ -618,7 +620,7 @@ export default function Dashboard() {
 
     return (
       <div className={styles.graphNode}>
-        <div 
+        <div
           className={`${styles.nodeBox} ${hasChildren ? styles.nodeBoxHasChildren : ""}`}
           onClick={() => onClick(node)}
         >
@@ -635,8 +637,8 @@ export default function Dashboard() {
           <div className={styles.nodeBoxText}>
             {boxText}
           </div>
-          <span 
-            className={styles.nodeBoxBadge} 
+          <span
+            className={styles.nodeBoxBadge}
             style={{ color: badgeColor, borderColor: `${badgeColor}33` }}
           >
             {node.type}
@@ -666,15 +668,14 @@ export default function Dashboard() {
         </div>
         <div className={styles.statusIndicator}>
           <div
-            className={`${styles.statusDot} ${
-              status === "running"
-                ? styles.statusRunning
-                : status === "success"
+            className={`${styles.statusDot} ${status === "running"
+              ? styles.statusRunning
+              : status === "success"
                 ? styles.statusSuccess
                 : status === "error"
-                ? styles.statusError
-                : ""
-            }`}
+                  ? styles.statusError
+                  : ""
+              }`}
           />
           <span style={{ textTransform: "capitalize", fontWeight: "600" }}>
             {status === "idle" ? "ready" : status}
@@ -687,7 +688,7 @@ export default function Dashboard() {
         {/* Left column: Inputs Panel */}
         <aside className={`${styles.sidebar} glowing-panel`}>
           <div className={styles.sectionTitle}>Pipeline Settings</div>
-          
+
           <form onSubmit={handleRun} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             {/* Provider Select */}
             <div className={styles.formGroup}>
@@ -702,6 +703,25 @@ export default function Dashboard() {
                 <option value="openai">OpenAI (requires key)</option>
                 <option value="anthropic">Anthropic (requires key)</option>
                 <option value="google">Google GenAI (requires key)</option>
+              </select>
+            </div>
+
+            {/* Sandbox Environment */}
+            <div className={styles.formGroup}>
+              <label>Sandbox Environment</label>
+              <select
+                className={styles.select}
+                value={environment}
+                onChange={(e) => setEnvironment(e.target.value)}
+                disabled={isRunning}
+              >
+                <option value="local">Local Python (In-Process)</option>
+                <option value="ipython">IPython REPL</option>
+                <option value="docker">Docker Sandbox</option>
+                <option value="modal">Modal REPL</option>
+                <option value="prime">Prime REPL</option>
+                <option value="daytona">Daytona REPL</option>
+                <option value="e2b">E2B Sandbox</option>
               </select>
             </div>
 
@@ -729,7 +749,7 @@ export default function Dashboard() {
                   onChange={(e) => setMaxDepth(parseInt(e.target.value) || 1)}
                   disabled={isRunning}
                   min="1"
-                  max="5"
+                  max="10"
                 />
               </div>
               <div className={styles.formGroup}>
@@ -741,7 +761,7 @@ export default function Dashboard() {
                   onChange={(e) => setMaxSteps(parseInt(e.target.value) || 1)}
                   disabled={isRunning}
                   min="1"
-                  max="30"
+                  max="100"
                 />
               </div>
             </div>
@@ -853,8 +873,8 @@ export default function Dashboard() {
                 {contextSource === "text"
                   ? `${characterCount.toLocaleString()} chars`
                   : file
-                  ? `${(characterCount / 1024).toFixed(1)} KB`
-                  : "0"}
+                    ? `${(characterCount / 1024).toFixed(1)} KB`
+                    : "0"}
               </span>
             </div>
             <div className={styles.statItem}>
@@ -882,7 +902,7 @@ export default function Dashboard() {
         <main className={`${styles.visualizerPanel} glowing-panel`}>
           <div className={styles.panelHeader}>
             <span className={styles.panelTitle}>Execution Visualizer</span>
-            
+
             {/* View Mode Tabs */}
             {events.length > 0 && (
               <div className={styles.tabContainer}>

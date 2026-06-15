@@ -30,8 +30,8 @@ async def run_rlm(
     query: str = Form(...),
     provider: str = Form("mock"),
     model_name: str = Form("gpt-4o-mini"),
-    max_depth: int = Form(3),
-    max_steps: int = Form(30),
+    max_depth: int = Form(10),
+    max_steps: int = Form(100),
     context_text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     environment: str = Form("local")
