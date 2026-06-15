@@ -59,11 +59,13 @@ class MockChatModel(BaseChatModel):
                 matched_key = key
                 break
         
-        # Determine the current turn index statelessly by checking execution log turn headers
-        turn_idx = 0
-        for msg in messages:
-            if msg.type in ("human", "user") and isinstance(msg.content, str):
-                turn_idx = msg.content.count("--- Turn ")
+        # Determine the current turn index statelessly by counting assistant replies in the message history,
+        # or checking execution log turn headers.
+        turn_idx = sum(1 for msg in messages if msg.type in ("ai", "assistant"))
+        if turn_idx == 0:
+            for msg in messages:
+                if msg.type in ("human", "user") and isinstance(msg.content, str):
+                    turn_idx = max(turn_idx, msg.content.count("--- Turn "))
 
         if response_list and turn_idx < len(response_list):
             content = response_list[turn_idx]

@@ -16,10 +16,12 @@ class RLMEngine:
         model: BaseChatModel,
         leaf_model: Optional[BaseChatModel] = None,
         current_depth: int = 0,
-        max_depth: int = 3,
-        max_steps: int = 10,
+        max_depth: int = 1,
+        max_steps: int = 30,
         verbose: bool = True,
-        callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        environment: str = "local",
+        environment_kwargs: Optional[Dict[str, Any]] = None
     ):
         self.model = model
         self.leaf_model = leaf_model or model
@@ -28,6 +30,8 @@ class RLMEngine:
         self.max_steps = max_steps
         self.verbose = verbose
         self.callback = callback
+        self.environment = environment
+        self.environment_kwargs = environment_kwargs or {}
         
         # Compile graph workflow once
         self.graph = build_rlm_graph().compile()
@@ -57,14 +61,20 @@ class RLMEngine:
                 "text_slice_len": len(text_slice)
             })
         
-        messages = [
-            SystemMessage(content=(
-                "You are a fast, targeted helper leaf node in a Recursive Language Model pipeline. "
-                "Answer the sub-query directly and accurately based on the provided text slice. "
-                "Keep your response concise and focused only on answering the sub-query."
-            )),
-            HumanMessage(content=f"Sub-Query: {query}\n\nText Slice (Context):\n{text_slice}")
-        ]
+        if not text_slice or not text_slice.strip():
+            messages = [
+                SystemMessage(content="You are a helpful targeted leaf assistant. Answer the query directly and accurately."),
+                HumanMessage(content=query)
+            ]
+        else:
+            messages = [
+                SystemMessage(content=(
+                    "You are a fast, targeted helper leaf node in a Recursive Language Model pipeline. "
+                    "Answer the sub-query directly and accurately based on the provided text slice. "
+                    "Keep your response concise and focused only on answering the sub-query."
+                )),
+                HumanMessage(content=f"Sub-Query: {query}\n\nText Slice (Context):\n{text_slice}")
+            ]
         
         response = self.leaf_model.invoke(messages)
         self._log(f"Leaf Node Response Summary: {response.content[:100]}...")
@@ -149,65 +159,91 @@ class RLMEngine:
         """Runs the query over the isolated context using LangGraph."""
         self._log(f"Initializing Sandbox (Context Length: {len(context)} characters)")
         
-        # Create persistent sandbox with callbacks
-        sandbox = Sandbox(
-            context=context,
-            llm_query_fn=self._llm_query_fn,
-            rlm_query_fn=self._rlm_query_fn
-        )
-        sandbox.callback = self.callback
-        sandbox.current_depth = self.current_depth
-        sandbox.max_depth = self.max_depth
+        # Start LMHandler socket server wrapping langchain models as BaseLM
+        from rlm.core.lm_handler import LMHandler
+        from rlm.clients.langchain_lm import LangChainLM
         
-        if self.callback:
-            self.callback({
-                "type": "engine_start",
-                "depth": self.current_depth,
+        wrapped_model = LangChainLM(self.model, model_name=getattr(self.model, "model_name", "model"))
+        wrapped_leaf_model = LangChainLM(self.leaf_model, model_name=getattr(self.leaf_model, "model_name", "leaf_model"))
+        
+        handler = LMHandler(wrapped_model, other_backend_client=wrapped_leaf_model)
+        handler.start()
+        
+        # Build environment kwargs
+        env_kwargs = self.environment_kwargs.copy()
+        env_kwargs["lm_handler_address"] = (handler.host, handler.port)
+        env_kwargs["context_payload"] = context
+        env_kwargs["depth"] = self.current_depth + 1
+        
+        # Pass tools if any configured
+        from rlm.environments import get_environment
+        env = get_environment(self.environment, env_kwargs)
+        
+        try:
+            # Create persistent sandbox with callbacks wrapping the environment
+            sandbox = Sandbox(
+                context=context,
+                llm_query_fn=self._llm_query_fn,
+                rlm_query_fn=self._rlm_query_fn,
+                environment=env
+            )
+            sandbox.callback = self.callback
+            sandbox.current_depth = self.current_depth
+            sandbox.max_depth = self.max_depth
+            
+            if self.callback:
+                self.callback({
+                    "type": "engine_start",
+                    "depth": self.current_depth,
+                    "query": query,
+                    "context_len": len(context)
+                })
+            
+            # Build initial state
+            initial_state = {
                 "query": query,
-                "context_len": len(context)
-            })
-        
-        # Build initial state
-        initial_state = {
-            "query": query,
-            "context_len": len(context),
-            "sandbox": sandbox,
-            "messages": [],
-            "history_logs": "",
-            "step_count": 0,
-            "max_steps": self.max_steps,
-            "final_answer": None,
-            "status": "running"
-        }
-        
-        self._log("Running neural orchestrator execution loop...")
-        
-        # Run state machine loop
-        final_state = self.graph.invoke(
-            initial_state,
-            config={"configurable": {"model": self.model}}
-        )
-        
-        # Handle termination results
-        if final_state["final_answer"] is not None:
-            self._log(f"Orchestration completed successfully.")
-            if self.callback:
-                self.callback({
-                    "type": "engine_end",
-                    "depth": self.current_depth,
-                    "final_answer": final_state["final_answer"],
-                    "success": True
-                })
-            return final_state["final_answer"]
-        else:
-            self._log(f"Orchestration exited without resolving (Step limit {self.max_steps} hit or error).")
-            if self.callback:
-                self.callback({
-                    "type": "engine_end",
-                    "depth": self.current_depth,
-                    "final_answer": None,
-                    "success": False,
-                    "error": "Step limit exceeded"
-                })
-            # Fallback output
-            return "Error: Could not resolve query. Step limit exceeded."
+                "context_len": len(context),
+                "sandbox": sandbox,
+                "messages": [],
+                "history_logs": "",
+                "step_count": 0,
+                "max_steps": self.max_steps,
+                "final_answer": None,
+                "status": "running"
+            }
+            
+            self._log("Running neural orchestrator execution loop...")
+            
+            # Run state machine loop
+            final_state = self.graph.invoke(
+                initial_state,
+                config={"configurable": {"model": self.model}}
+            )
+            
+            # Handle termination results
+            if final_state["final_answer"] is not None:
+                self._log(f"Orchestration completed successfully.")
+                if self.callback:
+                    self.callback({
+                        "type": "engine_end",
+                        "depth": self.current_depth,
+                        "final_answer": final_state["final_answer"],
+                        "success": True
+                    })
+                return final_state["final_answer"]
+            else:
+                self._log(f"Orchestration exited without resolving (Step limit {self.max_steps} hit or error).")
+                if self.callback:
+                    self.callback({
+                        "type": "engine_end",
+                        "depth": self.current_depth,
+                        "final_answer": None,
+                        "success": False,
+                        "error": "Step limit exceeded"
+                    })
+                # Fallback output
+                return "Error: Could not resolve query. Step limit exceeded."
+        finally:
+            handler.stop()
+            if hasattr(env, "cleanup"):
+                env.cleanup()

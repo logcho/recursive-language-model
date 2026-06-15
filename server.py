@@ -31,9 +31,10 @@ async def run_rlm(
     provider: str = Form("mock"),
     model_name: str = Form("gpt-4o-mini"),
     max_depth: int = Form(3),
-    max_steps: int = Form(10),
+    max_steps: int = Form(30),
     context_text: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None)
+    file: Optional[UploadFile] = File(None),
+    environment: str = Form("local")
 ):
     # Retrieve or extract context content
     context = ""
@@ -87,7 +88,8 @@ async def run_rlm(
         max_depth=max_depth,
         max_steps=max_steps,
         verbose=True,
-        callback=callback
+        callback=callback,
+        environment=environment
     )
 
     # Run the engine execution loop in a background thread

@@ -13,19 +13,25 @@ class Sandbox:
         self,
         context: str,
         llm_query_fn: Callable[[str, str], str],
-        rlm_query_fn: Callable[[str, str], str]
+        rlm_query_fn: Callable[[str, str], str],
+        environment: Any = None,
     ):
         self.context = context
         self.llm_query_fn = llm_query_fn
         self.rlm_query_fn = rlm_query_fn
+        self.environment = environment
         
         # Local state namespace that persists across runs
         self.local_vars: Dict[str, Any] = {
             "context": context,
             "llm_query": self._llm_query_wrapper,
             "rlm_query": self._rlm_query_wrapper,
+            "llm_query_batched": self._llm_query_batched_wrapper,
+            "rlm_query_batched": self._rlm_query_batched_wrapper,
             "get_logical_chunks": self.get_logical_chunks,
             "search_context": self.search_context,
+            "SHOW_VARS": self.show_vars,
+            "answer": {"content": "", "ready": False},
         }
         
         # Pre-import safe libraries for convenience
@@ -36,39 +42,101 @@ class Sandbox:
         self.local_vars["json"] = json
         self.local_vars["math"] = math
 
-    def _llm_query_wrapper(self, query: str, text_slice: str) -> str:
+    def _llm_query_wrapper(self, query: str, text_slice: Any = "", *args, **kwargs) -> str:
         """Wrapper to direct script-level calls to the engine-level leaf callback."""
-        if not isinstance(query, str) or not isinstance(text_slice, str):
-            raise TypeError("llm_query requires arguments (query: str, text_slice: str)")
+        if not isinstance(query, str):
+            raise TypeError("llm_query requires at least a string query parameter.")
+            
+        if not isinstance(text_slice, str):
+            text_slice = ""
             
         # Check for swapped arguments (query and text_slice)
-        if (query in self.context and text_slice not in self.context) or \
-           (query in self.context and text_slice in self.context and len(query) > len(text_slice) * 5):
+        if text_slice and (
+            (query in self.context and text_slice not in self.context) or \
+            (query in self.context and text_slice in self.context and len(query) > len(text_slice) * 5)
+        ):
             query, text_slice = text_slice, query
             sys.stderr.write("WARNING: Detected swapped arguments in llm_query function call (query was document text, text_slice was query string). Automatically corrected order.\n")
             sys.stderr.flush()
             
         return self.llm_query_fn(query, text_slice)
 
-    def _rlm_query_wrapper(self, query: str, text_slice: str) -> str:
+    def _rlm_query_wrapper(self, query: str, text_slice: Any = "", *args, **kwargs) -> str:
         """Wrapper to direct script-level calls to the engine-level branch callback."""
-        if not isinstance(query, str) or not isinstance(text_slice, str):
-            raise TypeError("rlm_query requires arguments (query: str, text_slice: str)")
+        if not isinstance(query, str):
+            raise TypeError("rlm_query requires at least a string query parameter.")
+            
+        if not isinstance(text_slice, str):
+            text_slice = ""
             
         # Check for swapped arguments (query and text_slice)
-        if (query in self.context and text_slice not in self.context) or \
-           (query in self.context and text_slice in self.context and len(query) > len(text_slice) * 5):
+        if text_slice and (
+            (query in self.context and text_slice not in self.context) or \
+            (query in self.context and text_slice in self.context and len(query) > len(text_slice) * 5)
+        ):
             query, text_slice = text_slice, query
             sys.stderr.write("WARNING: Detected swapped arguments in rlm_query function call (query was document text, text_slice was query string). Automatically corrected order.\n")
             sys.stderr.flush()
             
         return self.rlm_query_fn(query, text_slice)
 
+    def _llm_query_batched_wrapper(self, prompts: list, *args, **kwargs) -> list:
+        """Wrapper to run multiple llm_query calls concurrently."""
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            results = list(executor.map(lambda p: self._llm_query_wrapper(p, "", *args, **kwargs), prompts))
+        return results
+
+    def _rlm_query_batched_wrapper(self, prompts: list, *args, **kwargs) -> list:
+        """Wrapper to run multiple rlm_query calls concurrently."""
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            results = list(executor.map(lambda p: self._rlm_query_wrapper(p, "", *args, **kwargs), prompts))
+        return results
+
+    def show_vars(self, *args, **kwargs) -> str:
+        """Wrapper for SHOW_VARS()."""
+        return self.get_variables_summary()
+
     def run_code(self, code: str) -> Dict[str, Any]:
         """
         Executes a Python code string inside the persistent sandbox environment.
         Captures and redirects stdout and stderr, and maps exceptions.
         """
+        if self.environment:
+            res = self.environment.execute_code(code)
+            # Sync locals back into self.local_vars
+            self.local_vars.clear()
+            if hasattr(res, "locals") and res.locals:
+                self.local_vars.update(res.locals)
+            
+            # Make sure we preserve the helpers so they don't disappear from variables snapshot/usage
+            self.local_vars["context"] = self.context
+            self.local_vars["llm_query"] = self._llm_query_wrapper
+            self.local_vars["rlm_query"] = self._rlm_query_wrapper
+            self.local_vars["llm_query_batched"] = self._llm_query_batched_wrapper
+            self.local_vars["get_logical_chunks"] = self.get_logical_chunks
+            self.local_vars["search_context"] = self.search_context
+            self.local_vars["SHOW_VARS"] = self.show_vars
+            
+            # Make sure answer is populated
+            if getattr(res, "final_answer", None) is not None:
+                self.local_vars["answer"] = {"content": res.final_answer, "ready": True}
+            
+            # Sync environment.locals if it exists and is a dictionary (local REPL case)
+            if hasattr(self.environment, "locals") and isinstance(self.environment.locals, dict):
+                for k, v in self.environment.locals.items():
+                    if k not in self.local_vars:
+                        self.local_vars[k] = v
+            
+            return {
+                "success": res.stderr == "",
+                "stdout": res.stdout,
+                "stderr": res.stderr,
+                "exception": None if res.stderr == "" else res.stderr,
+                "traceback": None,
+            }
+
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
         
@@ -125,8 +193,12 @@ class Sandbox:
             "context",
             "llm_query",
             "rlm_query",
+            "llm_query_batched",
+            "rlm_query_batched",
             "get_logical_chunks",
             "search_context",
+            "SHOW_VARS",
+            "answer",
             "re",
             "json",
             "math"

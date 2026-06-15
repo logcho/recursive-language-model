@@ -143,5 +143,30 @@ print(f"Tree: {tree_data}")
         self.assertEqual(rlm_args[0], ("Describe SIRA", context))
         self.assertIn("WARNING: Detected swapped arguments in rlm_query", res_rlm["stderr"])
 
+    def test_batched_calls_and_answer_dict(self):
+        """Verify new RLM prompt sandbox capabilities (batched queries, SHOW_VARS, answer dictionary)."""
+        llm_args = []
+        sandbox = Sandbox(
+            context="SIRA stands for something important.",
+            llm_query_fn=lambda q, s: (llm_args.append((q, s)) or f"res_{q}"),
+            rlm_query_fn=lambda q, s: f"rlm_{q}"
+        )
+        
+        # Test SHOW_VARS
+        res_show = sandbox.run_code("vars_str = SHOW_VARS()\nmy_custom_var = 100")
+        self.assertTrue(res_show["success"])
+        self.assertIn("No custom variables defined.", sandbox.local_vars.get("vars_str"))
+        
+        # Test answer dictionary
+        res_ans = sandbox.run_code("answer['content'] = 'Final synthesis'\nanswer['ready'] = True")
+        self.assertTrue(res_ans["success"])
+        self.assertEqual(sandbox.local_vars["answer"]["content"], "Final synthesis")
+        self.assertTrue(sandbox.local_vars["answer"]["ready"])
+        
+        # Test batched query wrapper
+        res_batch = sandbox.run_code("results = llm_query_batched(['query1', 'query2'])")
+        self.assertTrue(res_batch["success"])
+        self.assertEqual(sandbox.local_vars.get("results"), ["res_query1", "res_query2"])
+
 if __name__ == '__main__':
     unittest.main()

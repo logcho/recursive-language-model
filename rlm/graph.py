@@ -5,7 +5,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 
 from rlm.sandbox import Sandbox
-from rlm.prompts import SYSTEM_INSTRUCTION, USER_PROMPT
+# Prompts are imported below in orchestrator_node
 
 def extract_token_usage(response) -> dict:
     """Extracts token usage details from a LangChain response message."""
@@ -56,8 +56,8 @@ class RLMState(TypedDict):
     status: str  # "running", "success", "error", "max_steps_reached"
 
 def parse_code_block(text: str) -> Optional[str]:
-    """Helper to extract the python code block inside ```python ... ``` tags."""
-    pattern = r"```python\s*(.*?)\s*```"
+    """Helper to extract the python/repl code block inside ```python ... ``` or ```repl ... ``` tags."""
+    pattern = r"```(?:python|repl)\s*(.*?)\s*```"
     match = re.search(pattern, text, re.DOTALL)
     if match:
         return match.group(1).strip()
@@ -70,6 +70,8 @@ def parse_final_answer(text: str) -> Optional[str]:
     if match:
         return match.group(1).strip()
     return None
+
+from rlm.prompts import SYSTEM_INSTRUCTION, USER_PROMPT_PIPELINE, build_rlm_system_prompt, build_user_prompt, RLM_SYSTEM_PROMPT, QueryMetadata
 
 def orchestrator_node(state: RLMState, config: RunnableConfig) -> Dict[str, Any]:
     """
@@ -101,16 +103,46 @@ def orchestrator_node(state: RLMState, config: RunnableConfig) -> Dict[str, Any]
         max_retries=max_retries
     )
     
-    # Format user prompt with the execution logs from the history
-    user_content = USER_PROMPT.format(
+    # Build messages list in conversational multi-turn format
+    prompt_messages = list(state["messages"])
+    if not prompt_messages:
+        # Create QueryMetadata
+        metadata = QueryMetadata(context_type="document", context_total_length=state["context_len"])
+        initial_prompts = build_rlm_system_prompt(
+            system_prompt=RLM_SYSTEM_PROMPT,
+            query_metadata=metadata,
+            root_prompt=state["query"],
+            orchestrator=True
+        )
+        for p in initial_prompts:
+            if p["role"] == "system":
+                prompt_messages.append(SystemMessage(content=system_content))
+            else:
+                prompt_messages.append(HumanMessage(content=p["content"]))
+        
+        # Turn 1 user prompt
+        turn_prompt = build_user_prompt(
+            root_prompt=state["query"],
+            iteration=0,
+            max_iterations=state["max_steps"]
+        )
+        prompt_messages.append(HumanMessage(content=turn_prompt["content"]))
+    else:
+        # Replace the first message (SystemMessage) with the latest formatted system content
+        prompt_messages[0] = SystemMessage(content=system_content)
+        
+        # Subsequent turns: append next user prompt (Turn i/N)
+        turn_prompt = build_user_prompt(
+            root_prompt=state["query"],
+            iteration=state["step_count"],
+            max_iterations=state["max_steps"]
+        )
+        prompt_messages.append(HumanMessage(content=turn_prompt["content"]))
+    
+    # Format user prompt with the execution logs from the history (kept for logs/compatibility)
+    user_content = USER_PROMPT_PIPELINE.format(
         history_logs=state["history_logs"] if state["history_logs"] else "No previous code execution has occurred."
     )
-    
-    # Prepare message window
-    prompt_messages = [
-        SystemMessage(content=system_content),
-        HumanMessage(content=user_content)
-    ]
     
     # Invoke Root LLM
     response = model.invoke(prompt_messages)
@@ -129,7 +161,7 @@ def orchestrator_node(state: RLMState, config: RunnableConfig) -> Dict[str, Any]
         }
     
     # Update messages tracking
-    updated_messages = list(state["messages"])
+    updated_messages = list(prompt_messages)
     updated_messages.append(response)
     
     # Parse final answer immediately if it's there
@@ -164,6 +196,8 @@ def executor_node(state: RLMState) -> Dict[str, Any]:
     turn_num = state["step_count"] + 1
     new_logs = f"--- Turn {turn_num} Execution ---\n"
     
+    repl_contents = []
+    
     if code:
         new_logs += f"Executing Code:\n```python\n{code}\n```\n\n"
         # Run code in sandbox
@@ -172,15 +206,19 @@ def executor_node(state: RLMState) -> Dict[str, Any]:
         # Log outputs
         if res["stdout"]:
             new_logs += f"Stdout:\n{res['stdout']}\n"
+            repl_contents.append(f"Stdout:\n{res['stdout']}")
         if res["stderr"]:
             new_logs += f"Stderr:\n{res['stderr']}\n"
+            repl_contents.append(f"Stderr:\n{res['stderr']}")
         
         if res["success"]:
             new_logs += "Execution Status: Success\n"
         else:
             new_logs += f"Execution Status: Failed with exception:\n{res['exception']}\n"
+            repl_contents.append(f"Execution failed with exception:\n{res['exception']}")
             if res["traceback"]:
                 new_logs += f"Traceback:\n{res['traceback']}\n"
+                repl_contents.append(f"Traceback:\n{res['traceback']}")
                 
         if hasattr(sandbox, "callback") and sandbox.callback:
             sandbox.callback({
@@ -193,8 +231,9 @@ def executor_node(state: RLMState) -> Dict[str, Any]:
                 "exception": res["exception"]
             })
     else:
-        new_logs += "Execution Status: Failed. No valid ```python ``` code block found in your previous response.\n"
-        new_logs += "Please write Python code inside markdown tags or output FINAL: <your final answer>.\n"
+        err_msg = "Execution Status: Failed. No valid ```python ``` or ```repl ``` code block found in your previous response.\nPlease write Python code inside markdown tags or output FINAL: <your final answer>.\n"
+        new_logs += err_msg
+        repl_contents.append(err_msg)
         
         if hasattr(sandbox, "callback") and sandbox.callback:
             sandbox.callback({
@@ -204,8 +243,12 @@ def executor_node(state: RLMState) -> Dict[str, Any]:
                 "stdout": "",
                 "stderr": "",
                 "success": False,
-                "exception": "No valid ```python ``` code block found in previous response."
+                "exception": "No valid ```python ``` or ```repl ``` code block found in previous response."
             })
+        
+    repl_text = "\n\n".join(repl_contents)
+    if not repl_text:
+        repl_text = "Executed successfully with no output."
         
     # Append to running history log
     updated_history = state["history_logs"]
@@ -214,15 +257,32 @@ def executor_node(state: RLMState) -> Dict[str, Any]:
     else:
         updated_history = new_logs
         
+    # Check if sandbox has final answer set via the answer dictionary
+    final_ans = state["final_answer"]
+    if "answer" in sandbox.local_vars and isinstance(sandbox.local_vars["answer"], dict):
+        if sandbox.local_vars["answer"].get("ready"):
+            final_ans = str(sandbox.local_vars["answer"].get("content", ""))
+            
+    # Append to message list tracking for multi-turn chat history
+    updated_messages = list(state["messages"])
+    updated_messages.append(HumanMessage(content=repl_text))
+        
     return {
+        "messages": updated_messages,
         "history_logs": updated_history,
-        "step_count": turn_num
+        "step_count": turn_num,
+        "final_answer": final_ans,
+        "status": "success" if final_ans is not None else "running"
     }
 
 def should_continue(state: RLMState) -> str:
     """Routing function to decide between looping, success termination, or step limit exit."""
     if state["final_answer"] is not None:
         return "end"
+    sandbox = state["sandbox"]
+    if "answer" in sandbox.local_vars and isinstance(sandbox.local_vars["answer"], dict):
+        if sandbox.local_vars["answer"].get("ready"):
+            return "end"
     if state["step_count"] >= state["max_steps"]:
         return "end"
     return "continue"

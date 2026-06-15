@@ -83,6 +83,12 @@ def main():
         default=10,
         help="Maximum steps per loop execution (default: 10)"
     )
+    parser.add_argument(
+        "--environment",
+        choices=["local", "ipython", "docker", "modal", "prime", "daytona", "e2b"],
+        default="local",
+        help="Sandbox environment to run code inside (default: local)"
+    )
     
     args = parser.parse_args()
     
@@ -107,7 +113,8 @@ def main():
             leaf_model=mock_model,
             max_depth=args.max_depth,
             max_steps=args.max_steps,
-            verbose=True
+            verbose=True,
+            environment=args.environment
         )
         
         result = engine.run(sample_query, sample_context)
@@ -164,7 +171,8 @@ def main():
         leaf_model=model,
         max_depth=args.max_depth,
         max_steps=args.max_steps,
-        verbose=True
+        verbose=True,
+        environment=args.environment
     )
     
     try:
